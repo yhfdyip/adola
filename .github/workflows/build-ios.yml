@@ -1,0 +1,87 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.9'
+          channel: 'stable'
+          cache: true
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            pods-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          flutter pub get
+          cd ios && pod install --repo-update || pod install
+
+      - name: Disable codesign
+        run: |
+          cd ios
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' Runner.xcodeproj/project.pbxproj || true
+          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' Runner.xcodeproj/project.pbxproj || true
+          sed -i '' 's/"CODE_SIGNING_REQUIRED=YES"/"CODE_SIGNING_REQUIRED=NO"/g' Runner.xcodeproj/project.pbxproj || true
+          sed -i '' 's/"CODE_SIGNING_ALLOWED=YES"/"CODE_SIGNING_ALLOWED=NO"/g' Runner.xcodeproj/project.pbxproj || true
+          sed -i '' 's/DEVELOPMENT_TEAM = .*/DEVELOPMENT_TEAM = "";/g' Runner.xcodeproj/project.pbxproj || true
+          echo 'CODE_SIGNING_ALLOWED=NO' >> Flutter/Release.xcconfig
+          echo 'CODE_SIGNING_REQUIRED=NO' >> Flutter/Release.xcconfig
+          echo 'CODE_SIGN_IDENTITY=""' >> Flutter/Release.xcconfig
+          echo 'PROVISIONING_PROFILE_SPECIFIER=""' >> Flutter/Release.xcconfig
+
+      - name: Build iOS
+        run: flutter build ios --release --no-codesign
+
+      - name: Create unsigned IPA
+        run: |
+          mkdir -p build/ios/ipa
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -rq ../ipa/Adola-unsigned.ipa Payload
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adola-ios-unsigned-ipa
+          path: build/ios/ipa/Adola-unsigned.ipa
+
+      - name: Publish nightly release
+        if: github.event_name != 'pull_request'
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          tag: nightly-adola
+          commit: ${{ github.sha }}
+          name: Adola Nightly Build
+          body: |
+            📦 Commit: ${{ github.sha }}
+            ⏰ Workflow: ${{ github.run_number }}
+          artifacts: build/ios/ipa/Adola-unsigned.ipa
+          token: ${{ secrets.GITHUB_TOKEN }}
+          removeArtifacts: true
+          replacesArtifacts: true
+          makeLatest: true
